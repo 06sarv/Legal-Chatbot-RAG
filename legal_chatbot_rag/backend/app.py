@@ -1,9 +1,20 @@
-import google.generativeai as genai
+iimport google.generativeai as genai
 from flask import Flask, request, jsonify
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
 
-genai.configure(api_key="AIzaSyDKiZI2ikH8avxkBmHbI2SBi0YL7lfS5kk")
+# Get the API key from environment variables
+API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not API_KEY:
+    raise ValueError("API key is missing! Set it in the .env file.")
+
+genai.configure(api_key=API_KEY)
 model = genai.GenerativeModel("gemini-1.5-pro-latest")  # Change this if needed
 
 @app.route("/chat", methods=["POST"])
