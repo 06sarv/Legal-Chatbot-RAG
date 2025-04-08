@@ -1,92 +1,112 @@
-import os
-import sys
-import json
-import faiss
-import numpy as np
 from flask import Flask, request, jsonify
+from flask_cors import CORS
+import sys
+import os
+import traceback
+
+# Make sure we can import from the /data folder
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data')))
+
+from documents import documents  # List of documents to query
+import faiss
+import pickle
 from sentence_transformers import SentenceTransformer
-from dotenv import load_dotenv
 import google.generativeai as genai
 
-# Allow import from data directory
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data')))
-from documents import documents  # ⬅️ your full document list (JSON + CSV)
+# --- Setup ---
+app = Flask(__name__)
+CORS(app)
 
 # Load environment variables
+from dotenv import load_dotenv
 load_dotenv()
 
-DATA_DIR = "/home/sweetyjuhi7/legal_chatbot_rag/legal_chatbot_rag/data/"
-FAISS_INDEX_PATH = os.path.join(DATA_DIR, "faiss_index")
+# Load Gemini API key
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
+# Load FAISS index
 print("🔍 Loading Embedding Model...")
-embedding_model = SentenceTransformer(os.path.join(DATA_DIR, "model"))
+model = SentenceTransformer("all-MiniLM-L6-v2")
 
 print("📥 Loading FAISS index...")
-index = faiss.read_index(FAISS_INDEX_PATH)
+index_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'faiss_index')
+index = faiss.read_index(index_path)
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-if not API_KEY:
-    raise ValueError("API key is missing! Set it in the .env file.")
+with open(os.path.join(os.path.dirname(__file__), '..', 'data', 'documents.pkl'), 'rb') as f:
+    faiss_documents = pickle.load(f)
 
-genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel("gemini-1.5-pro-latest")
+print("📄 Loaded documents:", len(faiss_documents))
 
-print("📄 Loading all legal documents...")
-print(f"📄 Total documents loaded: {len(documents)}")
+# Store chat history
+chat_history = []
 
-app = Flask(__name__)
-
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"message": "Welcome to the Legal Chatbot API! Use /chat for interacting with the chatbot."})
-
+# --- Routes ---
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
-        data = request.get_json()
-        if not data or "message" not in data:
-            return jsonify({"error": "Missing 'message' field in request"}), 400
+        user_input = request.json.get("message")
 
-        user_message = data["message"]
-        print(f"🔹 Received message: {user_message}")
+        if not user_input:
+            return jsonify({"error": "Message is required."}), 400
 
-        # Get query embedding
-        query_embedding = embedding_model.encode([user_message])
-        query_embedding = np.array(query_embedding).reshape(1, -1)
+        # Add user message to history
+        chat_history.append({"role": "user", "message": user_input})
 
-        # Search FAISS index
-        print("🔍 Searching for relevant documents in FAISS index...")
-        k = 3
-        D, I = index.search(query_embedding, k)
-        print(f"🔍 FAISS results: Indices: {I}, Distances: {D}")
+        # Get embedding
+        user_embedding = model.encode([user_input])
+        D, I = index.search(user_embedding, k=3)
 
-        # Collect top documents
-        top_results = []
-        for i, idx in enumerate(I[0]):
-            if 0 <= idx < len(documents):
-                top_results.append(documents[idx])
+        # Get top matched documents
+        context = ""
+        for idx in I[0]:
+            if idx < len(faiss_documents):
+                context += faiss_documents[idx] + "\n"
 
-        # If FAISS returns valid results, use them
-        if top_results:
-            context = " ".join(top_results)
-            prompt = f"{context}\n\nUser: {user_message}"
-            response = model.generate_content(prompt)
-        else:
-            print("⚠️ No relevant documents found. Falling back to Gemini only.")
-            response = model.generate_content(user_message)
+        if context.strip() == "":
+            context = "No matching documents found. Please generate a helpful answer."
 
-        if response and hasattr(response, "text"):
-            return jsonify({
-                "response": response.text,
-                "source": "FAISS + Gemini" if top_results else "Gemini only",
-                "matches_found": len(top_results)
-            })
-        else:
-            return jsonify({"error": "Invalid response from Gemini"}), 500
+        prompt = f"""You are a legal assistant chatbot. Answer based on the following legal context:\n\n{context}\n\nUser: {user_input}"""
+
+        model_gemini = genai.GenerativeModel(model_name="models/gemini-1.5-pro")
+
+        response = model_gemini.generate_content(prompt)
+
+        # Add bot response to history
+        bot_reply = response.text.strip()
+        chat_history.append({"role": "assistant", "message": bot_reply})
+
+        return jsonify({
+            "response": bot_reply,
+            "chat_history": chat_history
+        })
 
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        return jsonify({"error": "Internal Server Error"}), 500
+        traceback.print_exc()
+        return jsonify({
+            "error": "Oops! Something went wrong while processing your request.",
+            "details": str(e)
+        }), 500
 
+@app.route("/history", methods=["GET"])
+def get_history():
+    return jsonify(chat_history)
+
+# --- Extra Endpoints ---
+@app.route("/reset", methods=["POST"])
+def reset_chat():
+    chat_history.clear()
+    return jsonify({"message": "Chat history has been cleared."})
+
+@app.route("/status", methods=["GET"])
+def status():
+    return jsonify({"status": "Legal chatbot backend is running."})
+
+@app.route("/models", methods=["GET"])
+def list_models():
+    models = [{"name": m.name, "methods": m.supported_generation_methods} for m in genai.list_models()]
+    return jsonify(models)
+
+# --- Main ---
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True)
+
