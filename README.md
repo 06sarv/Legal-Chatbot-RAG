@@ -1,4 +1,4 @@
-# ⚖️ Legal Chatbot using RAG (Retrieval-Augmented Generation)
+# ⚖️ LegalMate 
 
 This is a full-stack legal chatbot that uses Retrieval-Augmented Generation (RAG) to answer queries based on legal documents. The project includes a Flask backend powered by FAISS, Gemini (Google's LLM), and a modern frontend interface for user interaction.
 
