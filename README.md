@@ -126,12 +126,6 @@ pip install -r requirements.txt
 
 ---
 
-## 📸 Screenshots
-
-> (Add screenshots of the chatbot interface, responses, and Flask running in terminal)
-
----
-
 ## 👩‍💻 Author
 
 Made with 💙 by [Sarvagna (06sarv)](https://github.com/06sarv)  
